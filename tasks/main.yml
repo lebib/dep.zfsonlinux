@@ -1,0 +1,19 @@
+- include: 'install.yml'
+  when: '{{ dep_zfsonlinux__state == "present" }}'
+  tags:
+    - stage::install
+
+- include: 'pools.yml'
+  tags:
+    - stage::config
+- include: 'datasets.yml'
+  tags:
+    - stage::config
+- include: 'snapshots.yml'
+  tags:
+    - stage::config
+
+- include: 'uninstall.yml'
+  when: '{{ dep_zfsonlinux__state == "absent" }}'
+  tags:
+    - stage::uninstall

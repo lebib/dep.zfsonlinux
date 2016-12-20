@@ -1,0 +1,20 @@
+- name: Export any running pool
+  command: 'zpool export -a'
+  become: True
+  failed_when: no
+  changed_when: no
+
+- name: Remove current ZFS installation
+  with_items: '{{ dep_zfsonlinux__target_packages }}'
+  apt:
+    name: '{{ item }}'
+    state: absent
+  become: True
+
+- name: Remove local APT repository
+  apt_repository:
+    repo: 'deb file:{{ dep_zfsonlinux__localrepo }} ./'
+    state: 'absent'
+  become: True
+  tags:
+    - host::local

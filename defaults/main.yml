@@ -1,0 +1,99 @@
+# Build from Git repository if True, otherwise from Debian source packages
+
+
+# ZFS module and client state
+dep_zfsonlinux__state: 'present'
+dep_zfsonlinux__debug: '{{ _debug|d(False) }}'
+dep_zfsonlinux__debug_build: '{{ dep_zfsonlinux__debug }}'
+
+# Enable initramfs and GRUB support
+dep_zfsonlinux__boot: True
+
+# Required flags and version
+dep_zfsonlinux__required_flags:
+  - lz4_compress
+  - encryption
+dep_zfsonlinux__required_version: '0.6'
+dep_zfsonlinux__version_mode: '>='
+
+# Installation source and target kernel
+dep_zfsonlinux__source_build:
+  '{{ dep_zfsonlinux__debug_build or
+      "encryption" in dep_zfsonlinux__required_flags }}'
+dep_zfsonlinux__target: '{{ ansible_kernel }}'
+
+# Source-independent dependencies
+dep_zfsonlinux__common_dependencies:
+  - 'linux-headers-{{ dep_zfsonlinux__target }}'
+  - 'parted'
+
+# Source-independent target packages
+dep_zfsonlinux__target_packages:
+  - 'libzfs2'
+  - 'libnvpair1'
+  - 'libzpool2'
+  - 'libuutil1'
+  - 'zfs-dkms'
+  - 'kmod-zfs-{{ dep_zfsonlinux__target }}'
+  - 'kmod-zfs-devel'
+  - 'kmod-zfs-devel-{{ dep_zfsonlinux__target }}'
+  - 'spl-dkms'
+  - 'kmod-spl-{{ dep_zfsonlinux__target }}'
+  - 'kmod-spl-devel'
+  - 'kmod-spl-devel-{{ dep_zfsonlinux__target }}'
+  - 'zfsutils-linux'
+  - 'zfs-test'
+
+# Source build configuration
+dep_zfsonlinux__source_namespace:
+  '{{ "tcaputi" if "encryption" in dep_zfsonlinux__required_flags else "zfsonlinux" }}'
+
+
+dep_zfsonlinux__source_zfs: 'git://github.com/{{ dep_zfsonlinux__source_namespace }}/zfs.git'
+dep_zfsonlinux__source_spl: 'git://github.com/zfsonlinux/spl.git'
+dep_zfsonlinux__source_dependencies:
+  - 'gnupg2'
+  - 'git'
+  - 'haveged'
+  - 'rsync'
+  - 'build-essential'
+  - 'autoconf'
+  - 'automake'
+  - 'libtool'
+  - 'gawk'
+  - 'alien'
+  - 'fakeroot'
+  - 'zlib1g-dev'
+  - 'uuid-dev'
+  - 'libattr1-dev'
+  - 'libblkid-dev'
+  - 'libselinux-dev'
+  - 'libudev-dev'
+  - 'lsscsi'
+  - 'ksh'
+
+# Build environment
+dep_zfsonlinux__build_delegate: '{{ omit }}'
+dep_zfsonlinux__tempbase: '/tmp/zfsonlinux-build'
+dep_zfsonlinux__localrepo: '/var/local/zfsonlinux-build/'
+dep_zfsonlinux__delete_tempdir: True
+dep_zfsonlinux__fallback_on_repo: True
+dep_zfsonlinux__build_release: '{{ ansible_distribution_release }}'
+dep_zfsonlinux__gpg_options:
+  - '--no-tty --yes'
+
+# Compilation options
+dep_zfsonlinux__build_options:
+  - '{% if dep_zfsonlinux__debug_build %}--enable-debug{% endif %}'
+  - '--with-linux=/lib/modules/{{ dep_zfsonlinux__target }}/source'
+  - '--with-linux-obj=/lib/modules/{{ dep_zfsonlinux__target }}/build'
+dep_zfsonlinux__build_options_spl: []
+dep_zfsonlinux__build_options_zfs: []
+
+# Repository build configuration
+dep_zfsonlinux__repos_release: 'jessie-backports'
+dep_zfsonlinux__repos_dependencies:
+  - 'zfsutils-linux'
+  - 'spl-dkms'
+  - 'zfs-dkms'
+  - '{% if dep_zfsonlinux__boot %}zfs-initramfs{% endif %}'

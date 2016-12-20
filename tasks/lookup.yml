@@ -1,0 +1,54 @@
+- name: Determine whether a reboot is needed to use the target version
+  set_fact: _zfsonlinux_require_reboot='{{ dep_zfsonlinux__target != ansible_kernel }}'
+
+- name: Load any existing ZFS module
+  modprobe:
+    name: 'zfs'
+    state: 'present'
+  failed_when: no
+  become: True
+
+- name: Read current feature flags
+  shell: |
+    zpool upgrade -v | tr '\n' '\r' | \
+    sed -e 's/.*\rFEAT DESCRIPTION\r-*\r//g' \
+    -e 's/The following legacy.*//g' | \
+    tr '\r' '\n' | grep -v '^\s' | cut -d' ' -f1
+  become: True
+  register: '_zfsonlinux_features_flags_output'
+  failed_when: no
+  changed_when: no
+
+- name: Read current package version
+  shell: |
+    dpkg -l | grep kmod-zfs-{{ dep_zfsonlinux__target }} | \
+    sed 's/\s\s*/ /g' | cut -d ' ' -f3 | head
+  register: '_zfsonlinux_module_version_output'
+  failed_when: no
+  changed_when: no
+
+- name: Store current feature flags
+  set_fact: _zfsonlinux_feature_flags='{{ _zfsonlinux_features_flags_output.stdout_lines|d([]) }}'
+
+- name: Store current module version
+  set_fact: _zfsonlinux_module_version='{{ _zfsonlinux_module_version_output.stdout|d("")}}'
+
+- name: Show current feature flags
+  debug: var='_zfsonlinux_feature_flags'
+  when: '{{ dep_zfsonlinux__debug }}'
+
+- name: Show current module version
+  debug: var='_zfsonlinux_module_version'
+  when: '{{ dep_zfsonlinux__debug }}'
+
+- name: Determine if ZFS is to be built
+  set_fact:
+    _zfsonlinux_require_install:
+      '{{ not (dep_zfsonlinux__required_flags|issubset(_zfsonlinux_feature_flags) and
+               _zfsonlinux_module_version and
+               _zfsonlinux_module_version|version_compare(dep_zfsonlinux__required_version,
+                                                          dep_zfsonlinux__version_mode)) }}'
+
+- name: Show whether we need to build ZFS
+  debug: var='_zfsonlinux_require_install'
+  when: '{{ dep_zfsonlinux__debug }}'

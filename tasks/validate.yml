@@ -1,0 +1,14 @@
+- name: Check that the installed target matches the running kernel
+  fail:
+    msg:
+      - "Current kernel does not match the ZFS build target, "
+      - "we need to reboot to the target kernel to load the module."
+  when: '{{ _zfsonlinux_require_install and _zfsonlinux_require_reboot }}'
+- name: Check that the installed version fulfills the requirements
+  fail:
+    msg:
+      - "Failed to install a version that satisfies the given version requirements"
+      - "Required version: {{ dep_zfsonlinux__required_version }}"
+      - "Current version: {{ _zfsonlinux_module_version }} (comparison mode: {{ dep_zfsonlinux__version_mode }})"
+      - "Missing flags: {{ dep_zfsonlinux__required_flags|difference(_zfsonlinux_feature_flags) }}"
+  when: '{{ _zfsonlinux_require_install and not _zfsonlinux_require_reboot}}'

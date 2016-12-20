@@ -1,0 +1,15 @@
+- include: 'lookup.yml'
+
+- include: 'sourcebuild.yml'
+  when: '{{ _zfsonlinux_require_install and dep_zfsonlinux__source_build }}'
+
+- include: 'repobuild.yml'
+  when: '{{ _zfsonlinux_require_install and not dep_zfsonlinux__source_build }}'
+
+- include: 'lookup.yml' 
+  when: '{{ _zfsonlinux_require_install }}'
+
+- include: 'validate.yml'
+  when: '{{ _zfsonlinux_require_install }}'
+  tags:
+    - 'type::validation'

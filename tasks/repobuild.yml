@@ -1,0 +1,5 @@
+- name: Install ZoL from repositories
+  with_items: '{{ dep_zfsonlinux__common_dependencies +
+                  dep_zfsonlinux__repos_dependencies }}'
+  apt: name='{{ item }}' state=latest
+  become: true

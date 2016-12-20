@@ -1,0 +1,400 @@
+- name: Define temporary root directory
+  set_fact:
+    _zfsonlinux_temproot:
+      '{{ dep_zfsonlinux__tempbase }}-{{ 65536|random if not dep_zfsonlinux__debug else "debug" }}'
+
+- name: Show temporary root directory
+  debug: var='_zfsonlinux_temproot'
+
+- name: Create local temporary root directory
+  file:
+    path: '{{ _zfsonlinux_temproot }}'
+    state: 'directory'
+
+- name: Uninstall target packages
+  apt:
+    name: '{{ item }}'
+    state: 'absent'
+  with_items: '{{ dep_zfsonlinux__target_packages }}'
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  become: True
+  tags:
+    - host::remote
+
+- name: Install build dependencies
+  apt:
+    name: '{{ item }}'
+    state: 'latest'
+  with_items: '{{ dep_zfsonlinux__common_dependencies +
+                  dep_zfsonlinux__source_dependencies }}'
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  become: True
+  tags:
+    - host::remote
+
+- name: Attempt to sign using GPG
+  shell: 'echo | gpg2 -s {{ dep_zfsonlinux__gpg_options|join(" ") }}'
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  changed_when: '{{ _gpg_test.rc != 0 }}'
+  failed_when: False
+  register: _gpg_test
+  become: True
+  tags:
+    - host::remote
+
+- name: Create a GPG key to sign local packages
+  shell: 
+    "gpg2 {{ dep_zfsonlinux__gpg_options|join(' ') }} --batch --gen-key /dev/stdin <<EOF\n
+    Key-Type: DSA\nKey-Length: 2048\n
+    Name-Real: root\n
+    Name-Email: root@{{ ansible_fqdn }}\n
+    Expire-Date: 30{{ '\n\nEOF\n' }}"
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  when: '{{ _gpg_test.rc != 0 }}'
+  become: True
+  tags:
+    - host::remote
+
+- name: Verify that the key is usable
+  shell: 'echo foo | gpg -s'
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  changed_when: False
+  become: True
+  tags:
+    - host::remote
+
+- name: Read GPG keyring
+  command: 'gpg2 {{ dep_zfsonlinux__gpg_options|join(" ") }} --armor --export'
+  delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+  changed_when: False
+  register: '_gpg_keyring'
+  become: True
+  tags:
+    - host::remote
+
+- name: Store GPG keyring
+  copy:
+    content: '{{ _gpg_keyring.stdout }}'
+    dest: '{{ _zfsonlinux_temproot }}/gpg-keyring'
+  become: True
+  tags:
+    - host::local
+
+- name: Synchronize GPG/APT keyrings
+  shell: 'apt-key add - < {{ _zfsonlinux_temproot }}/gpg-keyring'
+  become: True
+  changed_when: False
+  tags:
+    - host::local
+
+- block:
+    - name: Create temporary directories
+      file:
+        path: "{{ _zfsonlinux_temproot }}/{{ item }}"
+        state: "directory"
+      with_items: ['zfs', 'spl']
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+    
+    - name: Checkout SPL source code
+      git:
+        repo: '{{ dep_zfsonlinux__source_spl }}'
+        dest: '{{ _zfsonlinux_temproot }}/spl'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+
+    - name: Checkout ZFS source code
+      git:
+        repo: '{{ dep_zfsonlinux__source_zfs }}'
+        dest: '{{ _zfsonlinux_temproot }}/zfs'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+
+    - name: Patch compilation scripts
+      lineinfile:
+        line: 'set -e'
+        insertafter: '.!\/bin\/sh'
+        dest: '{{ _zfsonlinux_temproot }}/{{ item }}/autogen.sh'
+      with_items: ['zfs', 'spl']
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      changed_when: False
+      tags:
+        - host::remote
+
+    - name: Generate compilation scripts
+      command: '{{ _zfsonlinux_temproot }}/{{ item }}/autogen.sh'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/{{ item }}'
+      with_items: ['zfs', 'spl']
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+        - time::long
+
+    - name: Configure SPL compilation
+      command: '{{ _zfsonlinux_temproot }}/spl/configure \
+                {{ (dep_zfsonlinux__build_options + dep_zfsonlinux__build_options_spl)|join(" ") }}'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/spl'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+        - time::long
+  
+    - name: Show ZFS compilation options
+      debug:
+        msg: '{{ (dep_zfsonlinux__build_options + dep_zfsonlinux__build_options_spl)|join(" ") }}'
+  
+    - name: Compile SPL
+      command: 'make pkg-utils pkg-kmod'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/spl'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+        - time::long
+  
+    - name: Lookup resulting packages
+      find:
+        paths: '{{ _zfsonlinux_temproot }}/spl'
+        patterns: '*.deb'
+        recurse: False
+      register: _zfsonlinux_spl_packages
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+  
+    - name: Remove old ZFS utils
+      apt:
+        name: "zfsutils-linux"
+        state: "absent" 
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      become: True
+      tags:
+        - host::remote
+  
+    - name: Install SPL packages
+      apt:
+        deb: "{{ item }}"
+        state: "present"
+      with_items: '{{ _zfsonlinux_spl_packages.files|map(attribute="path")|list }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      become: True
+      tags:
+        - host::remote
+
+    - name: Show ZFS compilation options
+      debug:
+        msg: '{{ (dep_zfsonlinux__build_options + dep_zfsonlinux__build_options_zfs)|join(" ") }}'
+  
+    - name: Configure ZFS compilation
+      command: '{{ _zfsonlinux_temproot }}/zfs/configure \
+                {{ (dep_zfsonlinux__build_options + dep_zfsonlinux__build_options_zfs)|join(" ") }}'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/zfs'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+        - time::long
+  
+    - name: Compile ZFS
+      command: 'make pkg-utils pkg-kmod'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/zfs'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+        - time::long
+
+    - name: Reset compilation script patch
+      command: 'git checkout autogen.sh'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/{{ item }}'
+      with_items: ['zfs', 'spl']
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      changed_when: False
+      become: True
+      ignore_errors: True
+      tags:
+        - host::remote
+
+    - name: Lookup resulting packages
+      find:
+        paths: '{{ _zfsonlinux_temproot }}/zfs'
+        patterns: '*.deb'
+        recurse: False
+      register: _zfsonlinux_zfs_packages
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      tags:
+        - host::remote
+
+    - name: Uninstall SPL packages from delegated host
+      apt:
+        name: "{{ item }}"
+        state: "absent"
+      with_items: '{{ dep_zfsonlinux__target_packages }}'
+      when: '{{ dep_zfsonlinux__build_delegate != omit }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      become: True
+      tags:
+        - host::remote
+
+    - name: Unconfigure local repository
+      file:
+        path: '/etc/apt/sources.list.d/zfsonlinux-local-repository.list'
+        state: absent
+      changed_when: no
+      become: True
+      tags:
+        - host::local
+
+    - name: Purge local repository directory
+      file:
+        path: '{{ dep_zfsonlinux__localrepo }}'
+        state: 'absent'
+      changed_when: no
+      become: True
+      tags:
+        - host::local
+
+    - name: Create local repository directory
+      file:
+        path: '{{ dep_zfsonlinux__localrepo }}'
+        state: 'directory'
+      changed_when: no
+      become: True
+      tags:
+        - host::local
+
+    - name: Transfer packages to local repository
+      synchronize:
+        src: "{{ item }}"
+        dest: "{{ dep_zfsonlinux__localrepo }}/{{ item|basename }}"
+      with_items: '{{ (_zfsonlinux_spl_packages.files +
+                       _zfsonlinux_zfs_packages.files)|map(attribute="path")|list }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate
+                       if dep_zfsonlinux__build_delegate != omit
+                       else inventory_hostname }}'
+      become: True
+      tags:
+        - host::local
+        - host::remote
+
+    - name: Set permissions on local repository
+      file:
+        path: '{{ dep_zfsonlinux__localrepo }}'
+        owner: root
+        recurse: True
+      become: True
+      tags:
+        - host::local
+
+    - name: Build local repository
+      shell: |
+        dpkg-scanpackages . /dev/null > Packages && \
+        gzip --keep --force -9 < Packages > Packages.gz && \
+        echo "Suite: localbuild\nCodename: localbuild\nOrigin: {{ ansible_fqdn }}\nDate: $(LANG=C date -R)\nMD5Sum:" >> Release && \
+        printf ' '$(md5sum Packages.gz | cut --delimiter=' ' --fields=1)' %16d Packages.gz' \
+        $(wc --bytes Packages.gz | cut --delimiter=' ' --fields=1) >> Release && \
+        printf '\n '$(md5sum Packages | cut --delimiter=' ' --fields=1)' %16d Packages' \
+        $(wc --bytes Packages | cut --delimiter=' ' --fields=1) >> Release && \
+        echo "\nSHA256:" >> Release && \
+        printf ' '$(sha256sum Packages.gz | cut --delimiter=' ' --fields=1)' %16d Packages.gz' \
+        $(wc --bytes Packages.gz | cut --delimiter=' ' --fields=1) >> Release \ &&
+        printf '\n '$(sha256sum Packages | cut --delimiter=' ' --fields=1)' %16d Packages' \
+        $(wc --bytes Packages | cut --delimiter=' ' --fields=1) >> Release && \
+        gpg2 {{ dep_zfsonlinux__gpg_options|join(' ') }} \
+        --clearsign --digest-algo SHA512 -o InRelease Release
+      args:
+        chdir: '{{ dep_zfsonlinux__localrepo }}'
+      become: True
+      tags:
+        - host::local
+
+    - name: Configure local APT repository
+      apt_repository:
+        repo: 'deb file:{{ dep_zfsonlinux__localrepo }} ./'
+        filename: 'zfsonlinux-local-repository'
+        state: 'present'
+      become: True
+      tags:
+        - host::local
+
+    - name: Install packages from local APT repository
+      apt:
+        name: "{{ item|basename|split('_')|first }}"
+        state: "present"
+        default_release: "localbuild"
+        update_cache: True
+      with_items: '{{ (_zfsonlinux_spl_packages.files +
+                       _zfsonlinux_zfs_packages.files)|map(attribute="path")|list }}'
+      become: True
+      tags:
+        - host::local
+
+  rescue:
+    - name: Uninstall packages from delegated host
+      apt:
+        name: "{{ item|basename|split('_')|first }}"
+        state: "absent"
+      with_items: '{{ (_zfsonlinux_spl_packages.files +
+                       _zfsonlinux_zfs_packages.files)|map(attribute="path")|list }}'
+      when: '{{ dep_zfsonlinux__build_delegate != omit and _zfsonlinux_zfs_packages is defined }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      become: True
+      tags:
+        - host::remote
+
+    - name: Uninstall packages 
+      apt:
+        name: "{{ item|basename|split('_')|first }}"
+        state: "absent"
+      with_items: '{{ (_zfsonlinux_spl_packages.files +
+                       _zfsonlinux_zfs_packages.files)|map(attribute="path")|list }}'
+      when: '{{ _zfsonlinux_zfs_packages is defined }}'
+      become: True
+      tags:
+        - host::local
+
+    - include: 'repobuild.yml'
+      when: '{{ dep_zfsonlinux__fallback_on_repo }}'
+
+  always:
+    - name: Reset compilation script patch
+      command: 'git checkout autogen.sh'
+      args:
+        chdir: '{{ _zfsonlinux_temproot }}/{{ item }}'
+      with_items: ['zfs', 'spl']
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      changed_when: False
+      become: True
+      ignore_errors: True
+      tags:
+        - host::remote
+
+    - name: Delete generated packages
+      file:
+        path: "{{ item }}"
+        state: "absent"
+      with_items: '{{ (_zfsonlinux_spl_packages.files +
+                       _zfsonlinux_zfs_packages.files)|map(attribute="path")|list }}'
+      when: '{{ dep_zfsonlinux__delete_tempdir }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      become: True
+      ignore_errors: True
+      tags:
+        - host::remote
+
+    - name: Delete temporary directories
+      file:
+        path: "{{ _zfsonlinux_temproot }}"
+        state: "absent"
+      become: True
+      when: '{{ dep_zfsonlinux__delete_tempdir }}'
+      delegate_to: '{{ dep_zfsonlinux__build_delegate }}'
+      ignore_errors: True
+      tags:
+        - host::remote

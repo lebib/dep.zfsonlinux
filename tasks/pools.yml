@@ -1,0 +1,38 @@
+- name: List existing pools
+  command: zpool list -H
+  register: _zfsonlinux_pool_list_output
+
+- name: Initialize pool list
+  set_fact:
+    _current_pools: {}
+
+- name: Read pool status
+  command: 'zpool status -P {{ item }}'
+  with_items: '{{ _zfsonlinux_pool_list_output.stdout_lines }}'
+
+- name: Parse pool status
+  set_fact:
+    _: '{{ _current_pools[
+  with_items: '{{ _zfsonlinux_pool_list_output.stdout_lines }}'
+
+- name: Fetch pool status
+  set_fact:
+
+- name: Export removed pools
+  command: "zpool export {{ '-f' if dep_zfs__export_force else '' }} {{ item.key }}"
+  with_mapping: '{{ _current_pools }}'
+
+- name: Create missing pools
+  command: "zpool create \
+            {%- for key, value in item.value.options -%}
+            -o {{ key }}={{ value }}
+            {%- endfor %} \
+            {{ item.key }} \
+            {{ item.value.type }} \
+            {{ item.value.disks|join(' ') }}
+            {%- endfor -%}"
+
+
+  with_mapping: '{{ dep_zfsonlinux__pools }}'
+  when: '{{ item.value.state|d("present") == "present"
+            and item.key not in _current_pools }}'
